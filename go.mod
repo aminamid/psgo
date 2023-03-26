@@ -4,7 +4,7 @@ go 1.19
 
 require github.com/shirou/gopsutil/v3 v3.23.2
 
-replace github.com/shirou/gopsutil/v3 => github.com/aminamid/gopsutil/v3 v3.0.0-20230325115257-e63f1a9789d4
+replace github.com/shirou/gopsutil/v3 => github.com/aminamid/gopsutil/v3 v3.0.0-20230326032524-13a0080a11d5
 
 require (
 	github.com/go-ole/go-ole v1.2.6 // indirect
