@@ -1,3 +1,4 @@
+```
 Usage of ./psgo:
   -i int
         interval sec (default 10)
@@ -7,4 +8,4 @@ Usage of ./psgo:
   -s string
         cmdline regular expression matching for aggregating multiple processes (default "{\"NOCMD\":\"^$\",\"SYSTEMD\":\"^/lib/systemd\",\"SBIN\":\"^(/usr)?/sbin\"}")
   -v    show version information
-
+```

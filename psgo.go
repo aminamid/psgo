@@ -6,17 +6,14 @@ import (
 	"encoding/json"
 	"flag"
 	"fmt"
+	//"github.com/nakabonne/tstorage"
+	"github.com/shirou/gopsutil/v3/host"
+	"github.com/shirou/gopsutil/v3/process"
 	"log"
 	"os"
 	"path/filepath"
 	"regexp"
 	"time"
-	//"context"
-	//"github.com/shirou/gopsutil/v3/cpu"
-	//"github.com/shirou/gopsutil/v3/mem"
-	"github.com/shirou/gopsutil/v3/host"
-	"github.com/shirou/gopsutil/v3/process"
-	// "github.com/shirou/gopsutil/mem"  // to use v2
 )
 
 var (
@@ -28,7 +25,36 @@ var (
 	optInterval   int
 	optLenCmdline int
 	regxCfg       string
+	//dataDir       string
 )
+
+//func Writer(metricCh chan *StatProcSumm, dirname string) {
+//	storage, _ := tstorage.NewStorage(
+//		tstorage.WithDataPath(dirname),
+//		tstorage.WithTimestampPrecision(tstorage.Seconds),
+//	)
+//	defer storage.Close()
+//	for {
+//		metric := <-metricCh
+//		labels := []tstorage.Label{
+//			{Name: "hostname", Value: metric.tags["hostname"]},
+//			{Name: "pid", Value: metric.tags["pid"]},
+//			{Name: "nickname", Value: metric.tags["nickname"]},
+//		}
+//		for k, v := range metric.vals {
+//			err := storage.InsertRows([]tstorage.Row{
+//				{
+//					Metric:    k,
+//					Labels:    labels,
+//					DataPoint: tstorage.DataPoint{Timestamp: metric.ts.Unix(), Value: v},
+//				},
+//			})
+//			if err != nil {
+//				log.Fatal(err)
+//			}
+//		}
+//	}
+//}
 
 func main() {
 	flag.BoolVar(&showVersion, "v", false, "show version information")
@@ -36,6 +62,7 @@ func main() {
 	flag.IntVar(&optInterval, "i", 10, "interval sec")
 	flag.IntVar(&optLenCmdline, "l", 10, "max length to show cmdline")
 	flag.StringVar(&regxCfg, "s", `{"NOCMD":"^$","SYSTEMD":"^/lib/systemd","SBIN":"^(/usr)?/sbin"}`, "cmdline regular expression matching for aggregating multiple processes")
+	//flag.StringVar(&dataDir, "d", "", "directory to store data")
 	flag.Parse()
 
 	if showVersion {
@@ -50,6 +77,12 @@ func main() {
 		log.Fatal(err)
 	}
 
+	//var metricCh chan *StatProcSumm
+	//if len(dataDir) > 0 {
+	//	metricCh = make(chan *StatProcSumm)
+	//	go Writer(metricCh, dataDir)
+	//}
+
 	ctx := context.Background()
 	phost, err := host.Info()
 	if err != nil {
@@ -58,7 +91,29 @@ func main() {
 	interval := time.Duration(optInterval) * time.Second
 	tsCh := make(chan time.Time)
 	go pacemaker(tsCh, interval)
-	sub1(ctx, phost.Hostname, reduceCfg, regxMap, optLenCmdline, tsCh, interval)
+
+	statProc := NewStatProc(ctx, phost.Hostname, regxMap)
+
+	if reduceCfg {
+		fmt.Printf("time hostname nickname pid cpu usr sys iowait num_threads VmsKb RssKb cmdline\n")
+	} else {
+		fmt.Printf("time hostname nickname name pid cpu usr sys iowait num_threads VmsKb RssKb cmdline\n")
+	}
+
+	for {
+		tskick := <-tsCh
+		time.Sleep(time.Until(tskick))
+		ts := tskick.Add(-interval)
+		statProc.Update(ts)
+		if reduceCfg {
+			statProc.ReduceSumm(regxMap)
+		}
+		statProc.PrintSumm(!reduceCfg, optLenCmdline)
+		//if len(dataDir) > 0 {
+		//	statProc.StoreSumm(metricCh)
+		//}
+		statProc.Reinit()
+	}
 }
 
 func pacemaker(tsCh chan time.Time, interval time.Duration) {
@@ -78,6 +133,9 @@ type StatProc struct {
 	regexpMap map[string]*regexp.Regexp
 	summ      map[int32]*StatProcSumm
 	host      string
+}
+func (sp *StatProc)Summ() map[int32]*StatProcSumm {
+	return sp.summ
 }
 type StatProcSumm struct {
 	ts      time.Time
@@ -235,28 +293,14 @@ func (sp *StatProc) PrintSumm(showName bool, lenCmdline int) {
 		}
 	}
 }
+func (sp *StatProc) StoreSumm(metricCh chan *StatProcSumm) {
+	for _, sps := range sp.summ {
+		metricCh <- sps
+	}
+}
 func (sp *StatProc) Reinit() {
 	fmt.Printf("\n")
 	sp.oldprocs = sp.newprocs
 	sp.newprocs = make(map[int32]*process.Process)
 }
 
-func sub1(ctx context.Context, phost string, reduceCfg bool, regxs map[string]string, lenCmdline int, tsCh chan time.Time, interval time.Duration) {
-	statProc := NewStatProc(ctx, phost, regxs)
-	if reduceCfg {
-		fmt.Printf("time hostname nickname pid cpu usr sys iowait num_threads VmsKb RssKb cmdline\n")
-	} else {
-		fmt.Printf("time hostname nickname name pid cpu usr sys iowait num_threads VmsKb RssKb cmdline\n")
-	}
-	for {
-		tskick := <-tsCh
-		time.Sleep(time.Until(tskick))
-		ts := tskick.Add(-interval)
-		statProc.Update(ts)
-		if reduceCfg {
-			statProc.ReduceSumm(regxs)
-		}
-		statProc.PrintSumm(!reduceCfg, lenCmdline)
-		statProc.Reinit()
-	}
-}
