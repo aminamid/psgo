@@ -6,7 +6,6 @@ import (
 	"encoding/json"
 	"flag"
 	"fmt"
-	//"github.com/nakabonne/tstorage"
 	"github.com/shirou/gopsutil/v3/host"
 	"github.com/shirou/gopsutil/v3/process"
 	"log"
@@ -20,7 +19,7 @@ var (
 	//go:embed version.txt
 	version string
 
-	reduceCfg     bool
+	reduceCfg     string
 	showVersion   bool
 	optInterval   int
 	optLenCmdline int
@@ -28,41 +27,13 @@ var (
 	//dataDir       string
 )
 
-//func Writer(metricCh chan *StatProcSumm, dirname string) {
-//	storage, _ := tstorage.NewStorage(
-//		tstorage.WithDataPath(dirname),
-//		tstorage.WithTimestampPrecision(tstorage.Seconds),
-//	)
-//	defer storage.Close()
-//	for {
-//		metric := <-metricCh
-//		labels := []tstorage.Label{
-//			{Name: "hostname", Value: metric.tags["hostname"]},
-//			{Name: "pid", Value: metric.tags["pid"]},
-//			{Name: "nickname", Value: metric.tags["nickname"]},
-//		}
-//		for k, v := range metric.vals {
-//			err := storage.InsertRows([]tstorage.Row{
-//				{
-//					Metric:    k,
-//					Labels:    labels,
-//					DataPoint: tstorage.DataPoint{Timestamp: metric.ts.Unix(), Value: v},
-//				},
-//			})
-//			if err != nil {
-//				log.Fatal(err)
-//			}
-//		}
-//	}
-//}
 
 func main() {
 	flag.BoolVar(&showVersion, "v", false, "show version information")
-	flag.BoolVar(&reduceCfg, "r", true, "Aggregate statistical information from multiple processes based on their nicknames")
 	flag.IntVar(&optInterval, "i", 10, "interval sec")
-	flag.IntVar(&optLenCmdline, "l", 10, "max length to show cmdline")
-	flag.StringVar(&regxCfg, "s", `{"NOCMD":"^$","SYSTEMD":"^/lib/systemd","SBIN":"^(/usr)?/sbin"}`, "cmdline regular expression matching for aggregating multiple processes")
-	//flag.StringVar(&dataDir, "d", "", "directory to store data")
+	flag.IntVar(&optLenCmdline, "l", 0, "max length to show cmdline")
+	flag.StringVar(&regxCfg, "s", `{"NOCMD":"^$","SYSTEMD":"^(/usr)?/lib/systemd","SBIN":"^(/usr)?/sbin","BASH":"^-bash$","MXOS":"^[^ ]*java .*/mxos/server/bin"}`, "cmdline regular expression matching for aggregating multiple processes")
+	flag.StringVar(&reduceCfg, "a", `["NOCMD","SYSTEMD","SBIN","BASH"]`, "Aggregate statistical information from multiple processes based on their nicknames")
 	flag.Parse()
 
 	if showVersion {
@@ -77,11 +48,11 @@ func main() {
 		log.Fatal(err)
 	}
 
-	//var metricCh chan *StatProcSumm
-	//if len(dataDir) > 0 {
-	//	metricCh = make(chan *StatProcSumm)
-	//	go Writer(metricCh, dataDir)
-	//}
+	var reduceList []string
+	err = json.Unmarshal([]byte(reduceCfg), &reduceList)
+	if err != nil {
+		log.Fatal(err)
+	}
 
 	ctx := context.Background()
 	phost, err := host.Info()
@@ -94,25 +65,23 @@ func main() {
 
 	statProc := NewStatProc(ctx, phost.Hostname, regxMap)
 
-	if reduceCfg {
-		fmt.Printf("time hostname nickname pid cpu usr sys iowait num_threads VmsKb RssKb cmdline\n")
-	} else {
-		fmt.Printf("time hostname nickname name pid cpu usr sys iowait num_threads VmsKb RssKb cmdline\n")
-	}
+	headerString := "#time hostname nickname name pid cpu usr sys iowait num_threads VmsKb RssKb cmdline"
+	fmt.Println(headerString)
 
 	for {
 		tskick := <-tsCh
 		time.Sleep(time.Until(tskick))
 		ts := tskick.Add(-interval)
 		statProc.Update(ts)
-		if reduceCfg {
-			statProc.ReduceSumm(regxMap)
+		if len(reduceList) > 0 {
+			statProc.ReduceSumm(regxMap, reduceList)
 		}
-		statProc.PrintSumm(!reduceCfg, optLenCmdline)
+		statProc.PrintSumm(optLenCmdline)
 		//if len(dataDir) > 0 {
 		//	statProc.StoreSumm(metricCh)
 		//}
 		statProc.Reinit()
+		fmt.Println(headerString)
 	}
 }
 
@@ -150,12 +119,22 @@ func (sp *StatProc) AddAndDelete(id1, id2 int32) {
 	}
 	delete(sp.summ, id2)
 }
-func (sp *StatProc) ReduceSumm(regxCfg map[string]string) {
+func (sp *StatProc) ReduceSumm(regxCfg map[string]string, reduceList []string) {
+	var doReduce bool
 	idx := make(map[string]int32)
+
 	for i, v := range sp.summ {
 		if v.tags["nickname"] == v.tags["name"] {
 			continue
 		}
+		doReduce = false
+		for _,x := range reduceList {
+			if x == v.tags["nickname"] {
+				doReduce = true
+				break
+			}
+		}
+		if !doReduce { continue }
 		if _, ok := idx[v.tags["nickname"]]; !ok {
 			idx[v.tags["nickname"]] = i
 			sp.summ[i].cmdline = regxCfg[v.tags["nickname"]]
@@ -278,18 +257,22 @@ func (sp *StatProc) Update(ts time.Time) {
 		sp.summ[pid].vals["rssKb"] = float64(mem.RSS / unitmem)
 		sp.summ[pid].cmdline = cmdline
 
-		//fmt.Printf("%s %s %s %d %.1f %.0f %.0f %.0f %d %d %d %s\n", ts.Format("2006-01-02T15:04:05"), sp.host, nickname, p.Pid, cpuTotal, cpuUser, cpuSystem, cpuIowait, num_thread, mem.VMS/unitmem, mem.RSS/unitmem, cmdline)
-
 	}
 }
-func (sp *StatProc) PrintSumm(showName bool, lenCmdline int) {
-	if showName {
+func (sp *StatProc) PrintSumm(lenCmdline int) {
+	if lenCmdline <1 {	
 		for _, sps := range sp.summ {
 			fmt.Printf("%s %s %s %s %s %.1f %.0f %.0f %.0f %.0f %.0f %.0f %s\n", sps.ts.Format("2006-01-02T15:04:05"), sps.tags["hostname"], sps.tags["nickname"], sps.tags["name"], sps.tags["pid"], sps.vals["cpuTotal"], sps.vals["cpuUsr"], sps.vals["cpuSys"], sps.vals["cpuIow"], sps.vals["numThreads"], sps.vals["vmsKb"], sps.vals["rssKb"], sps.cmdline)
 		}
 	} else {
+		var lcmd int
 		for _, sps := range sp.summ {
-			fmt.Printf("%s %s %s %s %.1f %.0f %.0f %.0f %.0f %.0f %.0f %s\n", sps.ts.Format("2006-01-02T15:04:05"), sps.tags["hostname"], sps.tags["nickname"], sps.tags["pid"], sps.vals["cpuTotal"], sps.vals["cpuUsr"], sps.vals["cpuSys"], sps.vals["cpuIow"], sps.vals["numThreads"], sps.vals["vmsKb"], sps.vals["rssKb"], sps.cmdline)
+			if len(sps.cmdline) < lenCmdline {
+				lcmd = len(sps.cmdline)
+			} else {
+				lcmd = lenCmdline
+			}
+			fmt.Printf("%s %s %s %s %s %.1f %.0f %.0f %.0f %.0f %.0f %.0f %s\n", sps.ts.Format("2006-01-02T15:04:05"), sps.tags["hostname"], sps.tags["nickname"], sps.tags["name"], sps.tags["pid"], sps.vals["cpuTotal"], sps.vals["cpuUsr"], sps.vals["cpuSys"], sps.vals["cpuIow"], sps.vals["numThreads"], sps.vals["vmsKb"], sps.vals["rssKb"], sps.cmdline[0:lcmd])
 		}
 	}
 }
