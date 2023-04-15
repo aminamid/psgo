@@ -20,49 +20,49 @@ func NewPsgoExporter() *PsgoExporter {
 	return &PsgoExporter{
 		cpu: prometheus.NewGaugeVec(
 			prometheus.GaugeOpts{
-				Name: "cpu",
-				Help: "CPU usage",
+				Name: "psgo_cpupercent_cpu",
+				Help: "CPU usage 100percent/host",
 			},
 			[]string{"hostname", "nickname", "pid"},
 		),
 		usr: prometheus.NewGaugeVec(
 			prometheus.GaugeOpts{
-				Name: "usr",
-				Help: "User time",
+				Name: "psgo_mcore_usr",
+				Help: "User time millicore",
 			},
 			[]string{"hostname", "nickname", "pid"},
 		),
 		sys: prometheus.NewGaugeVec(
 			prometheus.GaugeOpts{
-				Name: "sys",
-				Help: "System time",
+				Name: "psgo_mcore_sys",
+				Help: "System time millicore",
 			},
 			[]string{"hostname", "nickname", "pid"},
 		),
 		iowait: prometheus.NewGaugeVec(
 			prometheus.GaugeOpts{
-				Name: "iowait",
-				Help: "I/O wait time",
+				Name: "psgo_mcore_iowait",
+				Help: "I/O wait time millicore",
 			},
 			[]string{"hostname", "nickname", "pid"},
 		),
 		numThreads: prometheus.NewGaugeVec(
 			prometheus.GaugeOpts{
-				Name: "num_threads",
+				Name: "psgo_numthreads",
 				Help: "Number of threads",
 			},
 			[]string{"hostname", "nickname", "pid"},
 		),
 		vmsKb: prometheus.NewGaugeVec(
 			prometheus.GaugeOpts{
-				Name: "vms_kb",
+				Name: "psgo_memkb_vms",
 				Help: "Virtual memory size in KB",
 			},
 			[]string{"hostname", "nickname", "pid"},
 		),
 		rssKb: prometheus.NewGaugeVec(
 			prometheus.GaugeOpts{
-				Name: "rss_kb",
+				Name: "psgo_memkb_rss",
 				Help: "Resident set size in KB",
 			},
 			[]string{"hostname", "nickname", "pid"},
