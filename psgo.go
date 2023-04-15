@@ -35,7 +35,7 @@ func main() {
 	flag.BoolVar(&showVersion, "v", false, "show version information")
 	flag.IntVar(&optInterval, "i", 10, "interval sec")
 	flag.IntVar(&optLenCmdline, "l", 0, "max length to show cmdline")
-	flag.StringVar(&regxCfg, "s", `{"NOCMD":"^$","SYSTEMD":"^(/usr)?/lib/systemd","SBIN":"^(/usr)?/sbin","BASH":"^-bash$","MXOS":"^[^ ]*java .*/mxos/server/bin"}`, "cmdline regular expression matching for aggregating multiple processes")
+	flag.StringVar(&regxCfg, "s", `{"NOCMD":"^$","SYSTEMD":"^(/usr)?/lib/systemd","SBIN":"^(/usr)?/sbin","BASH":"^-bash$","MXOS":"^[^ ]*java .*/mxos/server/bin","CASS":"^[^ ]*java .*service.CassandraDaemon"}`, "cmdline regular expression matching for aggregating multiple processes")
 	flag.StringVar(&reduceCfg, "a", `["NOCMD","SYSTEMD","SBIN","BASH"]`, "Aggregate statistical information from multiple processes based on their nicknames")
 	flag.StringVar(&listenAddress, "u", ":10040", "Listen address")
 	flag.Parse()
