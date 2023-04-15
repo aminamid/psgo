@@ -1,21 +1,12 @@
 package exporter
 
 import (
-	//"fmt"
-	"bufio"
-	"flag"
-	"io"
-	"log"
-	"os"
-	"strconv"
-	"strings"
+	"time"
 
 	"github.com/prometheus/client_golang/prometheus"
-	"github.com/prometheus/client_golang/prometheus/promhttp"
-	"net/http"
 )
 
-type psgoExporter struct {
+type PsgoExporter struct {
 	cpu        *prometheus.GaugeVec
 	usr        *prometheus.GaugeVec
 	sys        *prometheus.GaugeVec
@@ -25,8 +16,8 @@ type psgoExporter struct {
 	rssKb      *prometheus.GaugeVec
 }
 
-func newPsgoExporter() *psgoExporter {
-	return &psgoExporter{
+func NewPsgoExporter() *PsgoExporter {
+	return &PsgoExporter{
 		cpu: prometheus.NewGaugeVec(
 			prometheus.GaugeOpts{
 				Name: "cpu",
@@ -79,7 +70,7 @@ func newPsgoExporter() *psgoExporter {
 	}
 }
 
-func (e *psgoExporter) Describe(ch chan<- *prometheus.Desc) {
+func (e *PsgoExporter) Describe(ch chan<- *prometheus.Desc) {
 	e.cpu.Describe(ch)
 	e.usr.Describe(ch)
 	e.sys.Describe(ch)
@@ -89,7 +80,7 @@ func (e *psgoExporter) Describe(ch chan<- *prometheus.Desc) {
 	e.rssKb.Describe(ch)
 }
 
-func (e *psgoExporter) Collect(ch chan<- prometheus.Metric) {
+func (e *PsgoExporter) Collect(ch chan<- prometheus.Metric) {
 	e.cpu.Collect(ch)
 	e.usr.Collect(ch)
 	e.sys.Collect(ch)
@@ -99,35 +90,13 @@ func (e *psgoExporter) Collect(ch chan<- prometheus.Metric) {
 	e.rssKb.Collect(ch)
 }
 
-update
-
-func updateMetrics(psgo *psgoExporter) {
-		labels := prometheus.Labels{"hostname": hostname, "nickname": nickname, "pid": pid}
-		psgo.cpu.With(labels).Set(cpu)
-		psgo.usr.With(labels).Set(usr)
-		psgo.sys.With(labels).Set(sys)
-		psgo.iowait.With(labels).Set(iowait)
-		psgo.numThreads.With(labels).Set(numThreads)
-		psgo.vmsKb.With(labels).Set(vmsKb)
-		psgo.rssKb.With(labels).Set(rssKb)
-	}
-}
-
-func startHtml(listenAddress string) {
-	psgo := newPsgoExporter()
-	prometheus.MustRegister(psgo)
-
-	updateMetrics(*logFilePath, psgo, *backfill)
-
-	http.Handle("/metrics", promhttp.Handler())
-	http.HandleFunc("/", func(w http.ResponseWriter, r *http.Request) {
-		w.Write([]byte(`<html>
-			<head><title>PSGO Exporter</title></head>
-			<body>
-			<h1>PSGO Exporter</h1>
-			<p><a href="/metrics">Metrics</a></p>
-			</body>
-			</html>`))
-	})
-
+func (psgo *PsgoExporter) Set(tags map[string]string, vals map[string]float64, ts time.Time) {
+	labels := prometheus.Labels{"hostname": tags["hostname"], "nickname": tags["nickname"], "pid": tags["pid"]}
+	psgo.cpu.With(labels).Set(vals["cpuTotal"])
+	psgo.usr.With(labels).Set(vals["cpuUsr"])
+	psgo.sys.With(labels).Set(vals["cpuSys"])
+	psgo.iowait.With(labels).Set(vals["cpuIow"])
+	psgo.numThreads.With(labels).Set(vals["numThreads"])
+	psgo.vmsKb.With(labels).Set(vals["vmsKb"])
+	psgo.rssKb.With(labels).Set(vals["rssKb"])
 }

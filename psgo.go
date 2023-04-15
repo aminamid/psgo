@@ -8,11 +8,15 @@ import (
 	"fmt"
 	"github.com/shirou/gopsutil/v3/host"
 	"github.com/shirou/gopsutil/v3/process"
+	"github.com/prometheus/client_golang/prometheus"
 	"log"
 	"os"
 	"path/filepath"
 	"regexp"
 	"time"
+	"github.com/aminamid/psgo/exporter"
+	"github.com/prometheus/client_golang/prometheus/promhttp"
+	"net/http"
 )
 
 var (
@@ -24,9 +28,8 @@ var (
 	optInterval   int
 	optLenCmdline int
 	regxCfg       string
-	//dataDir       string
+	listenAddress       string
 )
-
 
 func main() {
 	flag.BoolVar(&showVersion, "v", false, "show version information")
@@ -34,6 +37,7 @@ func main() {
 	flag.IntVar(&optLenCmdline, "l", 0, "max length to show cmdline")
 	flag.StringVar(&regxCfg, "s", `{"NOCMD":"^$","SYSTEMD":"^(/usr)?/lib/systemd","SBIN":"^(/usr)?/sbin","BASH":"^-bash$","MXOS":"^[^ ]*java .*/mxos/server/bin"}`, "cmdline regular expression matching for aggregating multiple processes")
 	flag.StringVar(&reduceCfg, "a", `["NOCMD","SYSTEMD","SBIN","BASH"]`, "Aggregate statistical information from multiple processes based on their nicknames")
+	flag.StringVar(&listenAddress, "u", ":10040", "Listen address")
 	flag.Parse()
 
 	if showVersion {
@@ -53,6 +57,9 @@ func main() {
 	if err != nil {
 		log.Fatal(err)
 	}
+
+    psgo := exporter.NewPsgoExporter()
+	go startHtml(psgo,listenAddress) 
 
 	ctx := context.Background()
 	phost, err := host.Info()
@@ -77,9 +84,7 @@ func main() {
 			statProc.ReduceSumm(regxMap, reduceList)
 		}
 		statProc.PrintSumm(optLenCmdline)
-		//if len(dataDir) > 0 {
-		//	statProc.StoreSumm(metricCh)
-		//}
+		statProc.StoreSumm(psgo)
 		statProc.Reinit()
 		fmt.Println(headerString)
 	}
@@ -103,9 +108,11 @@ type StatProc struct {
 	summ      map[int32]*StatProcSumm
 	host      string
 }
-func (sp *StatProc)Summ() map[int32]*StatProcSumm {
+
+func (sp *StatProc) Summ() map[int32]*StatProcSumm {
 	return sp.summ
 }
+
 type StatProcSumm struct {
 	ts      time.Time
 	tags    map[string]string
@@ -128,13 +135,15 @@ func (sp *StatProc) ReduceSumm(regxCfg map[string]string, reduceList []string) {
 			continue
 		}
 		doReduce = false
-		for _,x := range reduceList {
+		for _, x := range reduceList {
 			if x == v.tags["nickname"] {
 				doReduce = true
 				break
 			}
 		}
-		if !doReduce { continue }
+		if !doReduce {
+			continue
+		}
 		if _, ok := idx[v.tags["nickname"]]; !ok {
 			idx[v.tags["nickname"]] = i
 			sp.summ[i].cmdline = regxCfg[v.tags["nickname"]]
@@ -260,7 +269,7 @@ func (sp *StatProc) Update(ts time.Time) {
 	}
 }
 func (sp *StatProc) PrintSumm(lenCmdline int) {
-	if lenCmdline <1 {	
+	if lenCmdline < 1 {
 		for _, sps := range sp.summ {
 			fmt.Printf("%s %s %s %s %s %.1f %.0f %.0f %.0f %.0f %.0f %.0f %s\n", sps.ts.Format("2006-01-02T15:04:05"), sps.tags["hostname"], sps.tags["nickname"], sps.tags["name"], sps.tags["pid"], sps.vals["cpuTotal"], sps.vals["cpuUsr"], sps.vals["cpuSys"], sps.vals["cpuIow"], sps.vals["numThreads"], sps.vals["vmsKb"], sps.vals["rssKb"], sps.cmdline)
 		}
@@ -276,14 +285,31 @@ func (sp *StatProc) PrintSumm(lenCmdline int) {
 		}
 	}
 }
-func (sp *StatProc) StoreSumm(metricCh chan *StatProcSumm) {
+func (sp *StatProc) StoreSumm(psgo *exporter.PsgoExporter) {
 	for _, sps := range sp.summ {
-		metricCh <- sps
+		psgo.Set(sps.tags, sps.vals, sps.ts)
 	}
 }
 func (sp *StatProc) Reinit() {
 	fmt.Printf("\n")
 	sp.oldprocs = sp.newprocs
 	sp.newprocs = make(map[int32]*process.Process)
+}
+func startHtml(psgo *exporter.PsgoExporter, listenAddress string) {
+    prometheus.MustRegister(psgo)
+
+    http.Handle("/metrics", promhttp.Handler())
+    http.HandleFunc("/", func(w http.ResponseWriter, r *http.Request) {
+        w.Write([]byte(`<html>
+            <head><title>PSGO Exporter</title></head>
+            <body>
+            <h1>PSGO Exporter</h1>
+            <p><a href="/metrics">Metrics</a></p>
+            </body>
+            </html>`))
+    })
+	log.Printf("Listening on %s", listenAddress)
+	log.Fatal(http.ListenAndServe(listenAddress, nil))
+
 }
 

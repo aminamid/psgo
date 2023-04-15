@@ -1,4 +1,4 @@
-module github.com/aminamid/psps
+module github.com/aminamid/psgo
 
 go 1.19
 
