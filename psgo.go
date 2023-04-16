@@ -6,17 +6,16 @@ import (
 	"encoding/json"
 	"flag"
 	"fmt"
+	"github.com/VictoriaMetrics/metrics"
 	"github.com/shirou/gopsutil/v3/host"
 	"github.com/shirou/gopsutil/v3/process"
-	"github.com/prometheus/client_golang/prometheus"
 	"log"
+	"net/http"
 	"os"
 	"path/filepath"
 	"regexp"
+	"sync"
 	"time"
-	"github.com/aminamid/psgo/exporter"
-	"github.com/prometheus/client_golang/prometheus/promhttp"
-	"net/http"
 )
 
 var (
@@ -28,7 +27,8 @@ var (
 	optInterval   int
 	optLenCmdline int
 	regxCfg       string
-	listenAddress       string
+	listenAddress string
+	metricsMutex  sync.Mutex
 )
 
 func main() {
@@ -58,8 +58,7 @@ func main() {
 		log.Fatal(err)
 	}
 
-    psgo := exporter.NewPsgoExporter()
-	go startHtml(psgo,listenAddress) 
+	go MetricsListen(listenAddress)
 
 	ctx := context.Background()
 	phost, err := host.Info()
@@ -84,7 +83,7 @@ func main() {
 			statProc.ReduceSumm(regxMap, reduceList)
 		}
 		statProc.PrintSumm(optLenCmdline)
-		statProc.StoreSumm(psgo)
+		statProc.UpdateMetrics()
 		statProc.Reinit()
 		fmt.Println(headerString)
 	}
@@ -233,7 +232,7 @@ func (sp *StatProc) Update(ts time.Time) {
 		}
 		//fmt.Printf("### thread\n%#v\n", *p)
 		mem, err := p.MemoryInfo()
-		if err != nil {
+		if err != nil || mem == nil{
 			if isold {
 				delete(sp.oldprocs, pid)
 				continue
@@ -285,31 +284,40 @@ func (sp *StatProc) PrintSumm(lenCmdline int) {
 		}
 	}
 }
-func (sp *StatProc) StoreSumm(psgo *exporter.PsgoExporter) {
-	for _, sps := range sp.summ {
-		psgo.Set(sps.tags, sps.vals, sps.ts)
-	}
-}
 func (sp *StatProc) Reinit() {
 	fmt.Printf("\n")
 	sp.oldprocs = sp.newprocs
 	sp.newprocs = make(map[int32]*process.Process)
 }
-func startHtml(psgo *exporter.PsgoExporter, listenAddress string) {
-    prometheus.MustRegister(psgo)
 
-    http.Handle("/metrics", promhttp.Handler())
-    http.HandleFunc("/", func(w http.ResponseWriter, r *http.Request) {
-        w.Write([]byte(`<html>
-            <head><title>PSGO Exporter</title></head>
-            <body>
-            <h1>PSGO Exporter</h1>
-            <p><a href="/metrics">Metrics</a></p>
-            </body>
-            </html>`))
-    })
-	log.Printf("Listening on %s", listenAddress)
-	log.Fatal(http.ListenAndServe(listenAddress, nil))
-
+func MetricsListen(listenAddr string) {
+	http.HandleFunc("/metrics", metricsHandler)
+	http.ListenAndServe(listenAddr, nil)
 }
 
+func metricsHandler(w http.ResponseWriter, _ *http.Request) {
+	metricsMutex.Lock()
+	defer metricsMutex.Unlock()
+
+	metrics.WritePrometheus(w, false)
+}
+
+func (sp *StatProc) UpdateMetrics() {
+	metricsMutex.Lock()
+	defer metricsMutex.Unlock()
+	metrics.UnregisterAllMetrics()
+
+	for _, sps := range sp.summ {
+		localSps := sps
+
+		labels := fmt.Sprintf(`hostname="%s",nickname="%s",pid="%s"`, localSps.tags["hostname"], localSps.tags["nickname"], localSps.tags["pid"])
+
+		metrics.NewGauge(fmt.Sprintf(`psgo_cpupercent_cpu{%s}`, labels), func() float64 { return localSps.vals["cpuTotal"] })
+		metrics.NewGauge(fmt.Sprintf(`psgo_millicore_usr{%s}`, labels), func() float64 { return localSps.vals["cpuUsr"] })
+		metrics.NewGauge(fmt.Sprintf(`psgo_millicore_sys{%s}`, labels), func() float64 { return localSps.vals["cpuSys"] })
+		metrics.NewGauge(fmt.Sprintf(`psgo_millicore_iowait{%s}`, labels), func() float64 { return localSps.vals["cpuIow"] })
+		metrics.NewGauge(fmt.Sprintf(`psgo_numthreads{%s}`, labels), func() float64 { return localSps.vals["numThreads"] })
+		metrics.NewGauge(fmt.Sprintf(`psgo_memkb_vms{%s}`, labels), func() float64 { return localSps.vals["vmsKb"] })
+		metrics.NewGauge(fmt.Sprintf(`psgo_memkb_rss{%s}`, labels), func() float64 { return localSps.vals["rssKb"] })
+	}
+}
