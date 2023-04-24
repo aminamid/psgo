@@ -6,9 +6,6 @@ import (
 	"encoding/json"
 	"flag"
 	"fmt"
-	"github.com/VictoriaMetrics/metrics"
-	"github.com/shirou/gopsutil/v3/host"
-	"github.com/shirou/gopsutil/v3/process"
 	"log"
 	"net/http"
 	"os"
@@ -16,6 +13,10 @@ import (
 	"regexp"
 	"sync"
 	"time"
+
+	"github.com/VictoriaMetrics/metrics"
+	"github.com/shirou/gopsutil/v3/host"
+	"github.com/shirou/gopsutil/v3/process"
 )
 
 var (
@@ -30,6 +31,41 @@ var (
 	listenAddress string
 	metricsMutex  sync.Mutex
 )
+
+type nicknameList map[string]map[int]int32
+
+func NewNicknameList() *nicknameList {
+	nlist := nicknameList{}
+	return &nlist
+}
+func (n *nicknameList) Add(nickname string, pid int32) {
+	_, ok := (*n)[nickname]
+	if !ok {
+		(*n)[nickname] = make(map[int]int32)
+	}
+	for _,v := range (*n)[nickname] {
+		if v == pid {return}
+	}
+	for i := 0; i <= len((*n)[nickname]); i++ {
+		if _, ok := (*n)[nickname][i]; !ok {
+			(*n)[nickname][i] =pid
+			break
+		}
+	}
+}
+func (n *nicknameList) Del(nickname string, pid int32) {
+	_, ok := (*n)[nickname]
+	if !ok {
+		log.Fatalf("ERROR nicknameList%#v should has nickname:%s\n", *n, nickname)
+	}
+	for k, v := range (*n)[nickname] {
+		if v == pid {
+			delete((*n)[nickname], k)
+			break
+		}
+	}
+	//log.Fatalf("ERROR pid %d not found in %v", pid, pmap)
+}
 
 func main() {
 	flag.BoolVar(&showVersion, "v", false, "show version information")
@@ -51,7 +87,6 @@ func main() {
 	if err != nil {
 		log.Fatal(err)
 	}
-
 	var reduceList []string
 	err = json.Unmarshal([]byte(reduceCfg), &reduceList)
 	if err != nil {
@@ -82,6 +117,7 @@ func main() {
 		if len(reduceList) > 0 {
 			statProc.ReduceSumm(regxMap, reduceList)
 		}
+		statProc.maintNickname()
 		statProc.PrintSumm(optLenCmdline)
 		statProc.UpdateMetrics()
 		statProc.Reinit()
@@ -105,7 +141,9 @@ type StatProc struct {
 	ctx       context.Context
 	regexpMap map[string]*regexp.Regexp
 	summ      map[int32]*StatProcSumm
+	oldsumm   map[int32]*StatProcSumm
 	host      string
+	nicknames *nicknameList
 }
 
 func (sp *StatProc) Summ() map[int32]*StatProcSumm {
@@ -114,6 +152,7 @@ func (sp *StatProc) Summ() map[int32]*StatProcSumm {
 
 type StatProcSumm struct {
 	ts      time.Time
+	id      int32
 	tags    map[string]string
 	vals    map[string]float64
 	cmdline string
@@ -146,10 +185,27 @@ func (sp *StatProc) ReduceSumm(regxCfg map[string]string, reduceList []string) {
 		if _, ok := idx[v.tags["nickname"]]; !ok {
 			idx[v.tags["nickname"]] = i
 			sp.summ[i].cmdline = regxCfg[v.tags["nickname"]]
+			sp.summ[i].id = 0
 			continue
 		}
 		sp.AddAndDelete(idx[v.tags["nickname"]], i)
 	}
+}
+func (sp *StatProc) maintNickname() {
+	// for k,v := range *sp.nicknames {
+	// 	fmt.Printf("%s: %v\n",k, v)
+	// }
+	for _, v := range sp.summ {
+		sp.nicknames.Add(v.tags["nickname"], v.id)
+		delete(sp.oldsumm, v.id)
+	}
+	for _, v := range sp.oldsumm {
+		sp.nicknames.Del(v.tags["nickname"], v.id)
+	}
+	// fmt.Printf("############################################################\n")
+	// for k,v := range *sp.nicknames {
+	// 	fmt.Printf("%s: %v\n",k,v)
+	// }
 }
 
 func NewStatProcSumm() *StatProcSumm {
@@ -173,6 +229,10 @@ func NewStatProc(ctx context.Context, host string, regxs map[string]string) Stat
 	if err != nil {
 		pids = make([]int32, 0)
 	}
+
+	sp.nicknames = NewNicknameList()
+	sp.summ = make(map[int32]*StatProcSumm)
+
 	for _, pid := range pids {
 		p, err := process.NewProcessWithContext(sp.ctx, pid)
 		if err != nil {
@@ -183,7 +243,6 @@ func NewStatProc(ctx context.Context, host string, regxs map[string]string) Stat
 	return sp
 }
 func (sp *StatProc) Update(ts time.Time) {
-	sp.summ = make(map[int32]*StatProcSumm)
 	pids, err := process.Pids()
 	if err != nil {
 		pids = make([]int32, 0)
@@ -232,7 +291,7 @@ func (sp *StatProc) Update(ts time.Time) {
 		}
 		//fmt.Printf("### thread\n%#v\n", *p)
 		mem, err := p.MemoryInfo()
-		if err != nil || mem == nil{
+		if err != nil || mem == nil {
 			if isold {
 				delete(sp.oldprocs, pid)
 				continue
@@ -254,6 +313,7 @@ func (sp *StatProc) Update(ts time.Time) {
 		sp.summ[pid].ts = ts
 		sp.summ[pid].tags["hostname"] = sp.host
 		sp.summ[pid].tags["pid"] = fmt.Sprintf("%d", p.Pid)
+		sp.summ[pid].id = p.Pid
 		sp.summ[pid].tags["name"] = pname
 		sp.summ[pid].tags["nickname"] = nickname
 		sp.summ[pid].vals["cpuTotal"] = cpuTotal
@@ -288,6 +348,8 @@ func (sp *StatProc) Reinit() {
 	fmt.Printf("\n")
 	sp.oldprocs = sp.newprocs
 	sp.newprocs = make(map[int32]*process.Process)
+	sp.oldsumm = sp.summ
+	sp.summ = make(map[int32]*StatProcSumm)
 }
 
 func MetricsListen(listenAddr string) {
@@ -301,23 +363,32 @@ func metricsHandler(w http.ResponseWriter, _ *http.Request) {
 
 	metrics.WritePrometheus(w, false)
 }
+func removeNonAlphanumeric(input string) string {
+    regex := regexp.MustCompile(`[^a-zA-Z0-9_]+`)
+    return regex.ReplaceAllString(input, "")
+}
 
 func (sp *StatProc) UpdateMetrics() {
 	metricsMutex.Lock()
 	defer metricsMutex.Unlock()
 	metrics.UnregisterAllMetrics()
-
 	for _, sps := range sp.summ {
 		localSps := sps
+		var localid int = 0
 
-		labels := fmt.Sprintf(`hostname="%s",nickname="%s",pid="%s"`, localSps.tags["hostname"], localSps.tags["nickname"], localSps.tags["pid"])
+		for k, v := range (*sp.nicknames)[localSps.tags["nickname"]] {
+			if v == localSps.id {
+				localid = k
+			}
+		}
+		labels := fmt.Sprintf(`nickname="%s",id="%d"`, localSps.tags["nickname"], localid)
 
-		metrics.NewGauge(fmt.Sprintf(`psgo_cpupercent_cpu{%s}`, labels), func() float64 { return localSps.vals["cpuTotal"] })
-		metrics.NewGauge(fmt.Sprintf(`psgo_millicore_usr{%s}`, labels), func() float64 { return localSps.vals["cpuUsr"] })
-		metrics.NewGauge(fmt.Sprintf(`psgo_millicore_sys{%s}`, labels), func() float64 { return localSps.vals["cpuSys"] })
-		metrics.NewGauge(fmt.Sprintf(`psgo_millicore_iowait{%s}`, labels), func() float64 { return localSps.vals["cpuIow"] })
-		metrics.NewGauge(fmt.Sprintf(`psgo_numthreads{%s}`, labels), func() float64 { return localSps.vals["numThreads"] })
-		metrics.NewGauge(fmt.Sprintf(`psgo_memkb_vms{%s}`, labels), func() float64 { return localSps.vals["vmsKb"] })
-		metrics.NewGauge(fmt.Sprintf(`psgo_memkb_rss{%s}`, labels), func() float64 { return localSps.vals["rssKb"] })
+		metrics.NewGauge(fmt.Sprintf(`psgo_cpu_percent{%s}`, labels), func() float64 { return localSps.vals["cpuTotal"] })
+		metrics.NewGauge(fmt.Sprintf(`psgo_usr_millicore{%s}`, labels), func() float64 { return localSps.vals["cpuUsr"] })
+		metrics.NewGauge(fmt.Sprintf(`psgo_sys_millicore{%s}`, labels), func() float64 { return localSps.vals["cpuSys"] })
+		metrics.NewGauge(fmt.Sprintf(`psgo_iowait_millicore{%s}`, labels), func() float64 { return localSps.vals["cpuIow"] })
+		metrics.NewGauge(fmt.Sprintf(`psgo_threads_num{%s}`, labels), func() float64 { return localSps.vals["numThreads"] })
+		metrics.NewGauge(fmt.Sprintf(`psgo_vms_memkb{%s}`, labels), func() float64 { return localSps.vals["vmsKb"] })
+		metrics.NewGauge(fmt.Sprintf(`psgo_rss_memkb{%s}`, labels), func() float64 { return localSps.vals["rssKb"] })
 	}
 }
