@@ -29,6 +29,7 @@ var (
 	optLenCmdline int
 	regxCfg       string
 	listenAddress string
+	procdir string
 	metricsMutex  sync.Mutex
 )
 
@@ -43,12 +44,14 @@ func (n *nicknameList) Add(nickname string, pid int32) {
 	if !ok {
 		(*n)[nickname] = make(map[int]int32)
 	}
-	for _,v := range (*n)[nickname] {
-		if v == pid {return}
+	for _, v := range (*n)[nickname] {
+		if v == pid {
+			return
+		}
 	}
 	for i := 0; i <= len((*n)[nickname]); i++ {
 		if _, ok := (*n)[nickname][i]; !ok {
-			(*n)[nickname][i] =pid
+			(*n)[nickname][i] = pid
 			break
 		}
 	}
@@ -71,9 +74,10 @@ func main() {
 	flag.BoolVar(&showVersion, "v", false, "show version information")
 	flag.IntVar(&optInterval, "i", 10, "interval sec")
 	flag.IntVar(&optLenCmdline, "l", 0, "max length to show cmdline")
-	flag.StringVar(&regxCfg, "s", `{"NOCMD":"^$","SYSTEMD":"^(/usr)?/lib/systemd","SBIN":"^(/usr)?/sbin","BASH":"^-bash$","MXOS":"^[^ ]*java .*/mxos/server/bin","CASS":"^[^ ]*java .*service.CassandraDaemon"}`, "cmdline regular expression matching for aggregating multiple processes")
-	flag.StringVar(&reduceCfg, "a", `["NOCMD","SYSTEMD","SBIN","BASH"]`, "Aggregate statistical information from multiple processes based on their nicknames")
-	flag.StringVar(&listenAddress, "u", ":10040", "Listen address")
+	flag.StringVar(&regxCfg, "s", `{"NOCMD":"^$","SYSTEMD":"^(/usr)?/lib/systemd","SBIN":"^(/usr)?/sbin","BASH":"^-bash$","MXOS":"^[^ ]*java .*/mxos/server/bin","CASS":"^[^ ]*java .*service.CassandraDaemon","PAUSE":"^/pause","WEBTOP":"^[^ ]*java .*/webtop/bin","QSVC":"^[^ ]*java .*QServiceMain","QADM":"^[^ ]*java .*QAdminServiceMain","QSEARCH":"^[^ ]*java .*QSearchServer","HAZELCAST":"^[^ ]*java .*hazelcast.core","EUREKA":"^[^ ]*java .*/eureka","CASREAP":"^[^ ]*java .*ReaperApplication"}`, "cmdline regular expression matching for aggregating multiple processes")
+	flag.StringVar(&reduceCfg, "a", `["NOCMD","SYSTEMD","SBIN","BASH","PAUSE"]`, "Aggregate statistical information from multiple processes based on their nicknames")
+	flag.StringVar(&listenAddress, "e", ":10040", "Exporting listen address")
+	flag.StringVar(&procdir, "d", "/proc", "Exporting listen address")
 	flag.Parse()
 
 	if showVersion {
@@ -82,6 +86,7 @@ func main() {
 		fmt.Printf("%s\n%s\n%s\n", version, f1, f2)
 		os.Exit(0)
 	}
+	os.Setenv("HOST_PROC", procdir)
 	var regxMap map[string]string
 	err := json.Unmarshal([]byte(regxCfg), &regxMap)
 	if err != nil {
@@ -262,40 +267,40 @@ func (sp *StatProc) Update(ts time.Time) {
 		if err != nil {
 			if isold {
 				delete(sp.oldprocs, pid)
-				continue
 			}
+			continue
 		}
 		//fmt.Printf("### cmdline\n%#v\n", *p)
 		pname, err := p.Name()
 		if err != nil {
 			if isold {
 				delete(sp.oldprocs, pid)
-				continue
 			}
+			continue
 		}
 		//fmt.Printf("### name\n%#v\n", *p)
 		cpuTotal, cpuUser, cpuSystem, cpuIowait, err := p.PercentAllWithContext(sp.ctx, 0)
 		if err != nil {
 			if isold {
 				delete(sp.oldprocs, pid)
-				continue
 			}
+			continue
 		}
 		//fmt.Printf("### cpu\n%#v\n", *p)
 		num_thread, err := p.NumThreads()
 		if err != nil {
 			if isold {
 				delete(sp.oldprocs, pid)
-				continue
 			}
+			continue
 		}
 		//fmt.Printf("### thread\n%#v\n", *p)
 		mem, err := p.MemoryInfo()
 		if err != nil || mem == nil {
 			if isold {
 				delete(sp.oldprocs, pid)
-				continue
 			}
+			continue
 		}
 		//fmt.Printf("### mem\n%#v\n###########\n", *p)
 		sp.newprocs[pid] = p
@@ -308,8 +313,6 @@ func (sp *StatProc) Update(ts time.Time) {
 			}
 		}
 		sp.summ[pid] = NewStatProcSumm()
-
-		const unitmem = 1024
 		sp.summ[pid].ts = ts
 		sp.summ[pid].tags["hostname"] = sp.host
 		sp.summ[pid].tags["pid"] = fmt.Sprintf("%d", p.Pid)
@@ -321,8 +324,9 @@ func (sp *StatProc) Update(ts time.Time) {
 		sp.summ[pid].vals["cpuSys"] = cpuSystem
 		sp.summ[pid].vals["cpuIow"] = cpuIowait
 		sp.summ[pid].vals["numThreads"] = float64(num_thread)
-		sp.summ[pid].vals["vmsKb"] = float64(mem.VMS / unitmem)
-		sp.summ[pid].vals["rssKb"] = float64(mem.RSS / unitmem)
+		const unitmem = 1024
+		sp.summ[pid].vals["vmsKb"] = float64(mem.VMS) / unitmem
+		sp.summ[pid].vals["rssKb"] = float64(mem.RSS) / unitmem
 		sp.summ[pid].cmdline = cmdline
 
 	}
@@ -364,8 +368,8 @@ func metricsHandler(w http.ResponseWriter, _ *http.Request) {
 	metrics.WritePrometheus(w, false)
 }
 func removeNonAlphanumeric(input string) string {
-    regex := regexp.MustCompile(`[^a-zA-Z0-9_]+`)
-    return regex.ReplaceAllString(input, "")
+	regex := regexp.MustCompile(`[^a-zA-Z0-9_]+`)
+	return regex.ReplaceAllString(input, "")
 }
 
 func (sp *StatProc) UpdateMetrics() {
